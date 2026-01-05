@@ -275,7 +275,9 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
         }
     }
 	canvas_draw_icon(canvas, 121, 57, &I_back);
-	canvas_draw_str_aligned(canvas, 120, 63, AlignRight, AlignBottom, "Exit");	
+	canvas_draw_str_aligned(canvas, 120, 63, AlignRight, AlignBottom, "Hold: Exit");	
+	canvas_draw_icon(canvas, 1, 55, &I_arrows);
+	canvas_draw_str_aligned(canvas, 11, 62, AlignLeft, AlignBottom, "Navigate");
 }
 
 // ===================================================================
