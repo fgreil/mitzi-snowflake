@@ -15,6 +15,7 @@ Watch the iterative growth of a snowflake on 64x64 pixels.
 ## Scientific background
 
 - Clifford A. Reiter: *A local cellular model for snow crystal growth.* (2004), see e.g. [PDF](https://www.patarnott.com/pdf/SnowCrystalGrowth.pdf)
+- Student project by **Yan Huck** at University Frankfurt: *[A Cellular Automaton Model for Snow Crystal Growth](https://itp.uni-frankfurt.de/~gros/StudentProjects/Projects_2020/projekt_yan_huck/)?
 
 ## Version history
 See [changelog.md](changelog.md)
