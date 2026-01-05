@@ -1,32 +1,9 @@
-// ===================================================================
-// Include: Furi OS core functionality
-// ===================================================================
-#include <furi.h>
-
-// ===================================================================
-// Include: GUI system for drawing to the screen
-// ===================================================================
-#include <gui/gui.h>
-
-// ===================================================================
-// Include: Input handling for button presses
-// ===================================================================
-#include <input/input.h>
-
-// ===================================================================
-// Include: Standard library functions (malloc, calloc, etc.)
-// ===================================================================
-#include <stdlib.h>
-
-// ===================================================================
-// Include: Memory and string manipulation functions
-// ===================================================================
-#include <string.h>
-
-// ===================================================================
-// Include: Logging functionality
-// ===================================================================
-#include <furi_hal.h>
+#include <furi.h>        // Furi OS core functionality
+#include <gui/gui.h>     // GUI system for drawing to the screen
+#include <input/input.h> // Input handling for button presses
+#include <stdlib.h>      // Standard library functions (malloc, calloc, etc.)
+#include <string.h>      // Memory and string manipulation functions
+#include <furi_hal.h>    // Logging functionality
 
 // ===================================================================
 // Constants
@@ -35,6 +12,9 @@
 #define SCREEN_OFFSET_X 64  // Draw on right side of screen
 
 #define TAG "Snowflake"  // Tag for logging
+
+// Growth probability (0-100) - lower = more sparse, branching snowflakes
+#define GROWTH_PROBABILITY 35
 
 // ===================================================================
 // Hexagonal direction vectors
@@ -52,7 +32,18 @@ typedef struct {
     char canvas[CANVAS_SIZE * CANVAS_SIZE];  // Pixel buffer for snowflake
     int actualW;                              // Actual working width (odd number)
     int step;                                 // Current growth step counter
+    uint32_t seed;                            // Random seed for snowflake generation
 } SnowflakeState;
+
+// ===================================================================
+// Function: Simple Random Number Generator
+// Returns a random number between 0 and 99
+// ===================================================================
+static uint32_t random_next(uint32_t* seed) {
+    // Linear congruential generator
+    *seed = (*seed * 1103515245 + 12345) & 0x7fffffff;
+    return (*seed / 65536) % 100;
+}
 
 // ===================================================================
 // Function: Initialize Snowflake
@@ -73,6 +64,10 @@ static void init_snowflake(SnowflakeState* state) {
     state->canvas[center * CANVAS_SIZE + center] = 1;
     FURI_LOG_D(TAG, "Center pixel set at (%d, %d)", center, center);
     
+    // Initialize random seed based on system tick
+    state->seed = furi_get_tick();
+    FURI_LOG_D(TAG, "Random seed: %lu", state->seed);
+    
     // Reset step counter
     state->step = 0;
     FURI_LOG_I(TAG, "Snowflake initialized successfully");
@@ -80,8 +75,8 @@ static void init_snowflake(SnowflakeState* state) {
 
 // ===================================================================
 // Function: Grow Snowflake
-// Advances the snowflake by one generation
-// Each existing pixel attempts to grow in 6 hexagonal directions
+// Advances the snowflake by one generation using probabilistic growth
+// This creates branching, snowflake-like structures instead of solid blobs
 // Returns: Number of new pixels added
 // ===================================================================
 static int grow_snowflake(SnowflakeState* state) {
@@ -115,10 +110,16 @@ static int grow_snowflake(SnowflakeState* state) {
                 if(nx < 0 || nx >= state->actualW || ny < 0 || ny >= state->actualW)
                     continue;
                 
-                // Add pixel if the target position is empty
+                // Only grow if the target position is empty
                 if(state->canvas[ny * CANVAS_SIZE + nx] == 0) {
-                    newPixels[ny * CANVAS_SIZE + nx] = 1;
-                    pixelsAdded++;
+                    // Probabilistic growth - only add pixel based on random chance
+                    // This creates the branching, snowflake-like structure
+                    uint32_t rand_val = random_next(&state->seed);
+                    
+                    if(rand_val < GROWTH_PROBABILITY) {
+                        newPixels[ny * CANVAS_SIZE + nx] = 1;
+                        pixelsAdded++;
+                    }
                 }
             }
         }
@@ -133,7 +134,7 @@ static int grow_snowflake(SnowflakeState* state) {
         state->step++;
         FURI_LOG_I(TAG, "Step %d complete: Added %d pixels", state->step, pixelsAdded);
     } else {
-        FURI_LOG_W(TAG, "No pixels added - snowflake may be at maximum size");
+        FURI_LOG_W(TAG, "No pixels added - snowflake growth may have stopped");
     }
     
     return pixelsAdded;
@@ -167,7 +168,8 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
     
     // Draw control instructions
     canvas_draw_str(canvas, 2, 34, "OK: Grow");
-    canvas_draw_str(canvas, 2, 44, "Back: Exit");
+    canvas_draw_str(canvas, 2, 44, "Left: Reset");
+    canvas_draw_str(canvas, 2, 54, "Back: Exit");
     
     // ---------------------------------------------------------------
     // Draw snowflake on the right side of the screen
@@ -257,8 +259,13 @@ int32_t snowflake_main(void* p) {
                     FURI_LOG_D(TAG, "OK button pressed, growing snowflake");
                     int added = grow_snowflake(state);
                     if(added == 0) {
-                        FURI_LOG_I(TAG, "Snowflake growth complete");
+                        FURI_LOG_I(TAG, "Snowflake growth stopped");
                     }
+                    view_port_update(view_port);
+                } else if(event.key == InputKeyLeft) {
+                    // Left button - reset the snowflake
+                    FURI_LOG_I(TAG, "Left button pressed, resetting snowflake");
+                    init_snowflake(state);
                     view_port_update(view_port);
                 }
             }
