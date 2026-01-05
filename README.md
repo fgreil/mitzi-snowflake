@@ -6,12 +6,15 @@ Watch the iterative growth of a snowflake on 64x64 pixels.
 
 
 ## Usage
-* **OK** button to grow the snowflake step by step
-* **Back** button exits the game
+* **Up/Down:** Decrease/Increase the selected parameter value
+* **Left/Right:** Navigate between parameters (move cursor)
+* **OK:** Grow snowflake one step
+* **Short Back:** Reset snowflake
+* **Long Back:** Exit app
 
 ## Scientific background
 
-Clifford A. Reiter: *A local cellular model for snow crystal growth.* (2004), see e.g. [PDF](https://www.patarnott.com/pdf/SnowCrystalGrowth.pdf)
+- Clifford A. Reiter: *A local cellular model for snow crystal growth.* (2004), see e.g. [PDF](https://www.patarnott.com/pdf/SnowCrystalGrowth.pdf)
 
 ## Version history
 See [changelog.md](changelog.md)
