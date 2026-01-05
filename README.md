@@ -6,8 +6,8 @@ Watch the iterative growth of a snowflake on 64x64 pixels.
 
 
 ## Usage
-* **Up/Down:** Navigate between parameters (move cursor)
-* **Left/Right:** Decrease/Increase the selected parameter value
+* **Up/Down:** Decrease/Increase the selected parameter value
+* **Left/Right:** Navigate between parameters (move cursor)
 * **OK:** Grow snowflake one step
 * **Short Back:** Reset snowflake
 * **Long Back:** Exit app
