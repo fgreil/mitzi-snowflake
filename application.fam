@@ -23,7 +23,7 @@ App(
     requires=["gui"],
 
     # Stack memory allocated for the app's thread (in bytes). 1KB is enough here.
-    stack_size=1 * 1024,
+    stack_size=4 * 1024,
 
     # Path to the app icon displayed in the menu
     fap_icon_assets="images",

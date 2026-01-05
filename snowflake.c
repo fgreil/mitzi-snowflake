@@ -1,183 +1,213 @@
-#include <furi.h>        // Furi OS core functionality
-#include <gui/gui.h>     // GUI system for drawing to the screen
-#include <input/input.h> // Input handling for button presses
-#include <stdlib.h>      // Standard library functions (malloc, calloc, etc.)
-#include <string.h>      // Memory and string manipulation functions
-#include <furi_hal.h>    // Logging functionality
+// Includes
+#include <furi.h>           // Furi OS core functionality
+#include <gui/gui.h>        // GUI system for drawing to the screen
+#include <input/input.h>    // Input handling for button presses
+#include <stdlib.h>         // Standard library functions (malloc, calloc, etc.)
+#include <string.h>         // Memory and string manipulation functions
+#include <math.h>           // Math functions (sqrt, fmax, fmin)
+#include <furi_hal.h>       // Logging functionality
 
 // ===================================================================
-// Constants
+// Constants - Reduced for Flipper Zero's limited RAM
 // ===================================================================
-#define CANVAS_SIZE 64
-#define SCREEN_OFFSET_X 64  // Draw on right side of screen
+#define GRID_SIZE 32        // Grid is 32x32 (1024 cells total)
+#define SCREEN_OFFSET_X 80  // Draw on right side of screen
+#define SCREEN_OFFSET_Y 16  // Center vertically
 
 #define TAG "Snowflake"  // Tag for logging
 
-// Growth probability (0-100) - lower = more sparse, branching snowflakes
-#define GROWTH_PROBABILITY 35
+// Reiter's model parameters
+#define ALPHA 1.0f      // Diffusion constant
+#define BETA 0.35f      // Boundary vapor level
+#define GAMMA 0.0003f   // Background vapor addition
 
 // ===================================================================
-// Hexagonal direction vectors
-// 6 hexagonal directions approximated on a square grid
-// Directions: 0°, 60°, 120°, 180°, 240°, 300°
-// ===================================================================
-static const int dx[] = {1, 1, 0, -1, -1, 0};
-static const int dy[] = {0, -1, -1, 0, 1, 1};
-
-// ===================================================================
-// Application State Structure
-// Holds all the data needed for the snowflake generator
+// Application State Structure - compact memory layout
 // ===================================================================
 typedef struct {
-    char canvas[CANVAS_SIZE * CANVAS_SIZE];  // Pixel buffer for snowflake
-    int actualW;                              // Actual working width (odd number)
-    int step;                                 // Current growth step counter
-    uint32_t seed;                            // Random seed for snowflake generation
+    float* s;        // State values (water content) - 1024 floats
+    float* u;        // Non-frozen diffusing water - 1024 floats
+    uint8_t* frozen; // Boolean: is cell frozen? - 1024 bytes
+    int step;        // Current growth step counter
 } SnowflakeState;
 
 // ===================================================================
-// Function: Simple Random Number Generator
-// Returns a random number between 0 and 99
+// Function: Get array index from x,y coordinates
 // ===================================================================
-static uint32_t random_next(uint32_t* seed) {
-    // Linear congruential generator
-    *seed = (*seed * 1103515245 + 12345) & 0x7fffffff;
-    return (*seed / 65536) % 100;
+static inline int get_index(int x, int y) {
+    return y * GRID_SIZE + x;
 }
 
 // ===================================================================
-// Function: Initialize Snowflake
-// Sets up a new snowflake with a single center pixel
+// Function: Check if cell is boundary cell
+// A boundary cell is unfrozen but has at least one frozen neighbor
 // ===================================================================
-static void init_snowflake(SnowflakeState* state) {
-    FURI_LOG_I(TAG, "Initializing snowflake");
+static bool is_boundary_cell(SnowflakeState* state, int x, int y) {
+    if(state->frozen[get_index(x, y)]) return false;
     
-    // Clear canvas - set all pixels to 0
-    memset(state->canvas, 0, CANVAS_SIZE * CANVAS_SIZE);
+    // Check 6 hexagonal neighbors (approximated on square grid)
+    static const int dx[] = {1, 1, 0, -1, -1, 0};
+    static const int dy[] = {0, -1, -1, 0, 1, 1};
     
-    // If W is even, we work with W-1 to ensure a proper center point
-    state->actualW = (CANVAS_SIZE % 2 == 0) ? CANVAS_SIZE - 1 : CANVAS_SIZE;
-    FURI_LOG_D(TAG, "Canvas size: %d, Actual width: %d", CANVAS_SIZE, state->actualW);
-    
-    // Set center pixel as the seed for snowflake growth
-    int center = state->actualW / 2;
-    state->canvas[center * CANVAS_SIZE + center] = 1;
-    FURI_LOG_D(TAG, "Center pixel set at (%d, %d)", center, center);
-    
-    // Initialize random seed based on system tick
-    state->seed = furi_get_tick();
-    FURI_LOG_D(TAG, "Random seed: %lu", state->seed);
-    
-    // Reset step counter
-    state->step = 0;
-    FURI_LOG_I(TAG, "Snowflake initialized successfully");
-}
-
-// ===================================================================
-// Function: Grow Snowflake
-// Advances the snowflake by one generation using probabilistic growth
-// This creates branching, snowflake-like structures instead of solid blobs
-// Returns: Number of new pixels added
-// ===================================================================
-static int grow_snowflake(SnowflakeState* state) {
-    FURI_LOG_D(TAG, "Growing snowflake - Step %d", state->step);
-    
-    // Create temporary buffer to store new growth
-    // We need a separate buffer to avoid affecting the growth algorithm
-    char* newPixels = (char*)calloc(CANVAS_SIZE * CANVAS_SIZE, sizeof(char));
-    if(!newPixels) {
-        FURI_LOG_E(TAG, "Failed to allocate memory for growth buffer");
-        return 0;
-    }
-    
-    // Copy current state to temporary buffer
-    memcpy(newPixels, state->canvas, CANVAS_SIZE * CANVAS_SIZE);
-    
-    int pixelsAdded = 0;
-    
-    // For each existing snowflake pixel, try to grow outward
-    for(int y = 0; y < state->actualW; y++) {
-        for(int x = 0; x < state->actualW; x++) {
-            // Skip empty pixels
-            if(state->canvas[y * CANVAS_SIZE + x] == 0) continue;
-            
-            // Try to grow in all 6 hexagonal directions
-            for(int dir = 0; dir < 6; dir++) {
-                int nx = x + dx[dir];
-                int ny = y + dy[dir];
-                
-                // Check bounds - ensure we don't go outside the canvas
-                if(nx < 0 || nx >= state->actualW || ny < 0 || ny >= state->actualW)
-                    continue;
-                
-                // Only grow if the target position is empty
-                if(state->canvas[ny * CANVAS_SIZE + nx] == 0) {
-                    // Probabilistic growth - only add pixel based on random chance
-                    // This creates the branching, snowflake-like structure
-                    uint32_t rand_val = random_next(&state->seed);
-                    
-                    if(rand_val < GROWTH_PROBABILITY) {
-                        newPixels[ny * CANVAS_SIZE + nx] = 1;
-                        pixelsAdded++;
-                    }
-                }
+    for(int dir = 0; dir < 6; dir++) {
+        int nx = x + dx[dir];
+        int ny = y + dy[dir];
+        
+        if(nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE) {
+            if(state->frozen[get_index(nx, ny)]) {
+                return true;
             }
         }
     }
     
-    // Copy result back to main canvas
-    memcpy(state->canvas, newPixels, CANVAS_SIZE * CANVAS_SIZE);
-    free(newPixels);
+    return false;
+}
+
+// ===================================================================
+// Function: Initialize Snowflake
+// ===================================================================
+static void init_snowflake(SnowflakeState* state) {
+    FURI_LOG_I(TAG, "Initializing snowflake");
     
-    // Increment step counter if we actually added pixels
-    if(pixelsAdded > 0) {
-        state->step++;
-        FURI_LOG_I(TAG, "Step %d complete: Added %d pixels", state->step, pixelsAdded);
-    } else {
-        FURI_LOG_W(TAG, "No pixels added - snowflake growth may have stopped");
+    // Initialize all cells with boundary vapor level BETA
+    for(int i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+        state->s[i] = BETA;
+        state->u[i] = BETA;
+        state->frozen[i] = 0;
     }
     
-    return pixelsAdded;
+    // Set center cell as frozen seed
+    int center = GRID_SIZE / 2;
+    int center_idx = get_index(center, center);
+    state->s[center_idx] = 1.0f;
+    state->frozen[center_idx] = 1;
+    
+    state->step = 0;
+    FURI_LOG_I(TAG, "Snowflake initialized");
+}
+
+// ===================================================================
+// Function: Grow Snowflake
+// Implements one step of Reiter's cellular automaton model
+// ===================================================================
+static void grow_snowflake(SnowflakeState* state) {
+    FURI_LOG_D(TAG, "Growing snowflake - Step %d", state->step);
+    
+    static const int dx[] = {1, 1, 0, -1, -1, 0};
+    static const int dy[] = {0, -1, -1, 0, 1, 1};
+    
+    // Step 1: Set u based on cell type (no v array needed - calculate on the fly)
+    for(int y = 0; y < GRID_SIZE; y++) {
+        for(int x = 0; x < GRID_SIZE; x++) {
+            int idx = get_index(x, y);
+            bool is_receptive = state->frozen[idx] || is_boundary_cell(state, x, y);
+            
+            if(is_receptive) {
+                state->u[idx] = 0.0f;  // Receptive: no diffusion
+            } else {
+                state->u[idx] = state->s[idx];  // Non-receptive: all water diffuses
+            }
+        }
+    }
+    
+    // Step 2: Apply diffusion in-place (use s as temporary storage)
+    for(int y = 1; y < GRID_SIZE - 1; y++) {
+        for(int x = 1; x < GRID_SIZE - 1; x++) {
+            int idx = get_index(x, y);
+            
+            // Calculate neighbor average
+            float sum = 0.0f;
+            int count = 0;
+            
+            for(int dir = 0; dir < 6; dir++) {
+                int nx = x + dx[dir];
+                int ny = y + dy[dir];
+                
+                if(nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE) {
+                    sum += state->u[get_index(nx, ny)];
+                    count++;
+                }
+            }
+            
+            float avg = (count > 0) ? (sum / count) : state->u[idx];
+            
+            // Store new u value temporarily in s
+            state->s[idx] = state->u[idx] + (ALPHA / 2.0f) * (avg - state->u[idx]);
+        }
+    }
+    
+    // Copy diffused values back and handle boundaries
+    for(int y = 0; y < GRID_SIZE; y++) {
+        for(int x = 0; x < GRID_SIZE; x++) {
+            int idx = get_index(x, y);
+            
+            // Edge cells stay at BETA
+            if(x == 0 || x == GRID_SIZE - 1 || y == 0 || y == GRID_SIZE - 1) {
+                state->u[idx] = BETA;
+                state->s[idx] = BETA;
+            } else {
+                state->u[idx] = state->s[idx];
+            }
+        }
+    }
+    
+    // Step 3: Update s and freeze boundary cells
+    for(int y = 0; y < GRID_SIZE; y++) {
+        for(int x = 0; x < GRID_SIZE; x++) {
+            int idx = get_index(x, y);
+            
+            bool is_receptive = state->frozen[idx] || is_boundary_cell(state, x, y);
+            
+            if(is_receptive) {
+                // Add background vapor
+                state->s[idx] = state->u[idx] + state->s[idx] + GAMMA;
+                
+                // Freeze if threshold reached
+                if(!state->frozen[idx] && state->s[idx] >= 1.0f) {
+                    state->frozen[idx] = 1;
+                }
+            } else {
+                state->s[idx] = state->u[idx];
+            }
+        }
+    }
+    
+    state->step++;
+    FURI_LOG_I(TAG, "Step %d complete", state->step);
 }
 
 // ===================================================================
 // Function: Draw Callback
-// Called by the GUI system to render the screen
-// Draws both the UI elements and the snowflake visualization
 // ===================================================================
 static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
     SnowflakeState* state = (SnowflakeState*)ctx;
     
-    // Clear the entire screen
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
     
-    // ---------------------------------------------------------------
-    // Draw UI on the left side of the screen
-    // ---------------------------------------------------------------
-    
-    // Draw title
+    // Draw UI
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 10, "Snowflake");
     
-    // Draw step counter
     canvas_set_font(canvas, FontSecondary);
     char step_str[32];
     snprintf(step_str, sizeof(step_str), "Step: %d", state->step);
     canvas_draw_str(canvas, 2, 22, step_str);
     
-    // Draw control instructions
     canvas_draw_str(canvas, 2, 34, "OK: Grow");
     canvas_draw_str(canvas, 2, 44, "Left: Reset");
     canvas_draw_str(canvas, 2, 54, "Back: Exit");
     
-    // ---------------------------------------------------------------
-    // Draw snowflake on the right side of the screen
-    // ---------------------------------------------------------------
-    for(int y = 0; y < state->actualW; y++) {
-        for(int x = 0; x < state->actualW; x++) {
-            if(state->canvas[y * CANVAS_SIZE + x] == 1) {
-                canvas_draw_dot(canvas, SCREEN_OFFSET_X + x, y);
+    // Draw snowflake - only frozen cells
+    for(int y = 0; y < GRID_SIZE; y++) {
+        for(int x = 0; x < GRID_SIZE; x++) {
+            if(state->frozen[get_index(x, y)]) {
+                int px = SCREEN_OFFSET_X + x;
+                int py = SCREEN_OFFSET_Y + y;
+                
+                if(px >= 64 && px < 128 && py >= 0 && py < 64) {
+                    canvas_draw_dot(canvas, px, py);
+                }
             }
         }
     }
@@ -185,85 +215,80 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
 
 // ===================================================================
 // Function: Input Callback
-// Called when the user presses a button
-// Queues the input event for processing in the main loop
 // ===================================================================
 static void snowflake_input_callback(InputEvent* input_event, void* ctx) {
     furi_assert(ctx);
     FuriMessageQueue* event_queue = ctx;
-    
-    // Put the input event into the queue
     furi_message_queue_put(event_queue, input_event, FuriWaitForever);
 }
 
 // ===================================================================
 // Function: Main Application Entry Point
-// This is the main function that runs when the app starts
 // ===================================================================
 int32_t snowflake_main(void* p) {
     UNUSED(p);
     
     FURI_LOG_I(TAG, "Snowflake application starting");
     
-    // ---------------------------------------------------------------
-    // Initialize application state
-    // ---------------------------------------------------------------
+    // Allocate state
     SnowflakeState* state = malloc(sizeof(SnowflakeState));
     if(!state) {
-        FURI_LOG_E(TAG, "Failed to allocate state memory");
+        FURI_LOG_E(TAG, "Failed to allocate state");
         return -1;
     }
-    init_snowflake(state);
     
-    // ---------------------------------------------------------------
-    // Create event queue for input handling
-    // ---------------------------------------------------------------
-    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
-    if(!event_queue) {
-        FURI_LOG_E(TAG, "Failed to allocate event queue");
+    // Allocate arrays - total: ~8KB (much smaller than before)
+    state->s = (float*)malloc(GRID_SIZE * GRID_SIZE * sizeof(float));
+    state->u = (float*)malloc(GRID_SIZE * GRID_SIZE * sizeof(float));
+    state->frozen = (uint8_t*)malloc(GRID_SIZE * GRID_SIZE * sizeof(uint8_t));
+    
+    if(!state->s || !state->u || !state->frozen) {
+        FURI_LOG_E(TAG, "Failed to allocate arrays");
+        if(state->s) free(state->s);
+        if(state->u) free(state->u);
+        if(state->frozen) free(state->frozen);
         free(state);
         return -1;
     }
     
-    // ---------------------------------------------------------------
-    // Set up viewport (the drawing surface)
-    // ---------------------------------------------------------------
+    init_snowflake(state);
+    
+    // Create event queue
+    FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+    if(!event_queue) {
+        FURI_LOG_E(TAG, "Failed to allocate event queue");
+        free(state->s);
+        free(state->u);
+        free(state->frozen);
+        free(state);
+        return -1;
+    }
+    
+    // Set up viewport
     ViewPort* view_port = view_port_alloc();
     view_port_draw_callback_set(view_port, snowflake_draw_callback, state);
     view_port_input_callback_set(view_port, snowflake_input_callback, event_queue);
     
-    // ---------------------------------------------------------------
-    // Register viewport with the GUI system
-    // ---------------------------------------------------------------
+    // Register viewport
     Gui* gui = furi_record_open(RECORD_GUI);
     gui_add_view_port(gui, view_port, GuiLayerFullscreen);
     FURI_LOG_I(TAG, "GUI initialized, entering main loop");
     
-    // ---------------------------------------------------------------
-    // Main event loop - processes user input
-    // ---------------------------------------------------------------
+    // Main event loop
     InputEvent event;
     bool running = true;
     
     while(running) {
-        // Wait for input event (with 100ms timeout)
         if(furi_message_queue_get(event_queue, &event, 100) == FuriStatusOk) {
-            // Only process press and repeat events
             if(event.type == InputTypePress || event.type == InputTypeRepeat) {
                 if(event.key == InputKeyBack) {
-                    // Back button - exit application
                     FURI_LOG_I(TAG, "Back button pressed, exiting");
                     running = false;
                 } else if(event.key == InputKeyOk) {
-                    // OK button - grow the snowflake
                     FURI_LOG_D(TAG, "OK button pressed, growing snowflake");
-                    int added = grow_snowflake(state);
-                    if(added == 0) {
-                        FURI_LOG_I(TAG, "Snowflake growth stopped");
-                    }
+                    grow_snowflake(state);
                     view_port_update(view_port);
                 } else if(event.key == InputKeyLeft) {
-                    // Left button - reset the snowflake
                     FURI_LOG_I(TAG, "Left button pressed, resetting snowflake");
                     init_snowflake(state);
                     view_port_update(view_port);
@@ -272,14 +297,15 @@ int32_t snowflake_main(void* p) {
         }
     }
     
-    // ---------------------------------------------------------------
-    // Cleanup - free all allocated resources
-    // ---------------------------------------------------------------
+    // Cleanup
     FURI_LOG_I(TAG, "Cleaning up resources");
     gui_remove_view_port(gui, view_port);
     furi_record_close(RECORD_GUI);
     view_port_free(view_port);
     furi_message_queue_free(event_queue);
+    free(state->s);
+    free(state->u);
+    free(state->frozen);
     free(state);
     
     FURI_LOG_I(TAG, "Snowflake application terminated");
