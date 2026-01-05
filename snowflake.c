@@ -241,21 +241,16 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
     snprintf(gamma_str, sizeof(gamma_str), "%s gam:%.3f", 
              (state->selected_param == PARAM_GAMMA) ? ">" : " ", (double)state->gamma);
     canvas_draw_str(canvas, 2, 36, gamma_str);
-    
-    // Draw step counter
-    char step_str[32];
-    snprintf(step_str, sizeof(step_str), "Step %d", state->step);
-    canvas_draw_str(canvas, 2, 46, step_str);
-    
     // Count frozen cells
     int frozen_total = 0;
     for(int i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
         if(state->frozen[i]) frozen_total++;
     }
-    
-    char frozen_str[32];
-    snprintf(frozen_str, sizeof(frozen_str), "%d frozen cells", frozen_total);
-    canvas_draw_str(canvas, 2, 56, frozen_str);
+    // Draw step counter
+    char buffer[42];
+    snprintf(buffer, sizeof(buffer), "Step %d: %d frozen", state->step, frozen_total);
+    canvas_draw_str(canvas, 2, 50, buffer);
+   
     
     // Draw snowflake with hexagonal cells
     for(int y = 0; y < GRID_SIZE; y++) {
@@ -278,6 +273,7 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
 	canvas_draw_str_aligned(canvas, 120, 63, AlignRight, AlignBottom, "Hold: Exit");	
 	canvas_draw_icon(canvas, 1, 55, &I_arrows);
 	canvas_draw_str_aligned(canvas, 11, 62, AlignLeft, AlignBottom, "Navigate");
+	elements_button_center(canvas, "OK");
 }
 
 // ===================================================================
