@@ -1,6 +1,7 @@
 // Includes
 #include <furi.h>           // Furi OS core functionality
 #include <gui/gui.h>        // GUI system for drawing to the screen
+#include <gui/elements.h>  // GUI elements library for button hints and UI components
 #include <input/input.h>    // Input handling for button presses
 #include <stdlib.h>         // Standard library functions (malloc, calloc, etc.)
 #include <string.h>         // Memory and string manipulation functions
