@@ -13,9 +13,9 @@
 // Constants
 // ===================================================================
 #define GRID_SIZE 16        // Grid is 16x16 logical hex cells
-#define HEX_WIDTH 3         // Each hex cell is 3 pixels wide
-#define HEX_HEIGHT 4        // Each hex cell is 4 pixels tall
-#define SCREEN_OFFSET_X 80  // Draw on right side of screen
+#define HEX_WIDTH 5         // Each hex cell is 5 pixels wide (flat-top)
+#define HEX_HEIGHT 3        // Each hex cell is 3 pixels tall (flat-top)
+#define SCREEN_OFFSET_X 48  // Draw on right side of screen
 #define SCREEN_OFFSET_Y 0   // Start at top
 
 #define TAG "Snowflake"
@@ -73,74 +73,75 @@ static inline int get_index(int x, int y) {
 
 // ===================================================================
 // Function: Map logical hex cell to screen center pixel
-// Returns the center pixel (*) position for a given hex cell
+// Flat-top hexagons: odd columns are offset downward by HEX_HEIGHT/2
 // ===================================================================
 static void get_hex_center_pixel(int hex_x, int hex_y, int* pixel_x, int* pixel_y) {
-    // Each hex is HEX_WIDTH pixels wide horizontally
-    // Odd rows are offset by HEX_WIDTH/2 for hexagonal packing
     *pixel_x = SCREEN_OFFSET_X + hex_x * HEX_WIDTH;
     *pixel_y = SCREEN_OFFSET_Y + hex_y * HEX_HEIGHT;
     
-    // Offset every other row for hexagonal packing
-    if(hex_y % 2 == 1) {
-        *pixel_x += HEX_WIDTH / 2;
+    // Offset odd columns downward for hexagonal packing
+    if(hex_x % 2 == 1) {
+        *pixel_y += HEX_HEIGHT / 2;
     }
 }
 
 // ===================================================================
 // Function: Fill hexagonal cell
-// Draws a 3x4 hexagon pattern:
-//   0,X,0
-//   X,X,X
-//   X,C,X  (C = center pixel at column 1, row 2)
-//   0,X,0
+// Draws a 5x3 flat-top hexagon pattern:
+//   0,X,X,X,0
+//   X,X,C,X,X
+//   0,X,X,X,0
+// Center pixel C is at row 1, col 2 (middle of pattern)
 // ===================================================================
 static void fill_hex_cell(Canvas* canvas, int center_px, int center_py, bool filled) {
-    // Row 0: top (offset -2 from center) - only middle pixel
-    if(filled) canvas_draw_dot(canvas, center_px, center_py - 2);
-    
-    // Row 1: (offset -1 from center) - all three pixels
+    // Row 0: 0,X,X,X,0 (offset -1 from center)
     if(filled) {
         canvas_draw_dot(canvas, center_px - 1, center_py - 1);
         canvas_draw_dot(canvas, center_px, center_py - 1);
         canvas_draw_dot(canvas, center_px + 1, center_py - 1);
     }
     
-    // Row 2: center row - X,C,X pattern
+    // Row 1: X,X,C,X,X (center row, offset 0)
     if(filled) {
+        canvas_draw_dot(canvas, center_px - 2, center_py);
         canvas_draw_dot(canvas, center_px - 1, center_py);
-        canvas_draw_dot(canvas, center_px, center_py);  // C = center pixel
+        canvas_draw_dot(canvas, center_px, center_py);      // C = center pixel
         canvas_draw_dot(canvas, center_px + 1, center_py);
+        canvas_draw_dot(canvas, center_px + 2, center_py);
     } else {
         // Always draw center pixel even when not filled (for grid visualization)
         canvas_draw_dot(canvas, center_px, center_py);
     }
     
-    // Row 3: bottom (offset +1 from center) - only middle pixel
-    if(filled) canvas_draw_dot(canvas, center_px, center_py + 1);
+    // Row 2: 0,X,X,X,0 (offset +1 from center)
+    if(filled) {
+        canvas_draw_dot(canvas, center_px - 1, center_py + 1);
+        canvas_draw_dot(canvas, center_px, center_py + 1);
+        canvas_draw_dot(canvas, center_px + 1, center_py + 1);
+    }
 }
 
 // ===================================================================
-// Function: Get hexagonal neighbors accounting for row offset
-// Even and odd rows have different neighbor positions
+// Function: Get hexagonal neighbors for flat-top hexagons
+// Using "odd-q" vertical layout (odd columns shifted down)
 // ===================================================================
 static void get_hex_neighbors(int x, int y, int neighbors_x[6], int neighbors_y[6]) {
-    if(y % 2 == 0) {
-        // Even rows: neighbors at (-1,0), (-1,-1), (0,-1), (1,0), (0,1), (-1,1)
-        neighbors_x[0] = x + 1;  neighbors_y[0] = y;      // E
-        neighbors_x[1] = x;      neighbors_y[1] = y - 1;  // NE
-        neighbors_x[2] = x - 1;  neighbors_y[2] = y - 1;  // NW
-        neighbors_x[3] = x - 1;  neighbors_y[3] = y;      // W
-        neighbors_x[4] = x - 1;  neighbors_y[4] = y + 1;  // SW
-        neighbors_x[5] = x;      neighbors_y[5] = y + 1;  // SE
-    } else {
-        // Odd rows: neighbors at (1,0), (1,-1), (0,-1), (-1,0), (0,1), (1,1)
-        neighbors_x[0] = x + 1;  neighbors_y[0] = y;      // E
+    if(x % 2 == 0) {
+        // Even columns
+        neighbors_x[0] = x;      neighbors_y[0] = y - 1;  // N
         neighbors_x[1] = x + 1;  neighbors_y[1] = y - 1;  // NE
-        neighbors_x[2] = x;      neighbors_y[2] = y - 1;  // NW
-        neighbors_x[3] = x - 1;  neighbors_y[3] = y;      // W
-        neighbors_x[4] = x;      neighbors_y[4] = y + 1;  // SW
-        neighbors_x[5] = x + 1;  neighbors_y[5] = y + 1;  // SE
+        neighbors_x[2] = x + 1;  neighbors_y[2] = y;      // SE
+        neighbors_x[3] = x;      neighbors_y[3] = y + 1;  // S
+        neighbors_x[4] = x - 1;  neighbors_y[4] = y;      // SW
+        neighbors_x[5] = x - 1;  neighbors_y[5] = y - 1;  // NW
+    } else {
+        // Odd columns (offset down)
+        neighbors_x[0] = x;      neighbors_y[0] = y - 1;  // N
+        neighbors_x[1] = x + 1;  neighbors_y[1] = y;      // NE
+        neighbors_x[2] = x + 1;  neighbors_y[2] = y + 1;  // SE
+        neighbors_x[3] = x;      neighbors_y[3] = y + 1;  // S
+        neighbors_x[4] = x - 1;  neighbors_y[4] = y + 1;  // SW
+        neighbors_x[5] = x - 1;  neighbors_y[5] = y;      // NW
     }
 }
 
@@ -149,6 +150,9 @@ static void get_hex_neighbors(int x, int y, int neighbors_x[6], int neighbors_y[
 // ===================================================================
 static bool is_boundary_cell(SnowflakeState* state, int x, int y) {
     if(state->frozen[get_index(x, y)]) return false;
+    
+    // Border cells (2 cells from edge) can never be boundary cells
+    if(x < 2 || x >= GRID_SIZE - 2 || y < 2 || y >= GRID_SIZE - 2) return false;
     
     int neighbors_x[6], neighbors_y[6];
     get_hex_neighbors(x, y, neighbors_x, neighbors_y);
@@ -217,8 +221,8 @@ static void grow_snowflake(SnowflakeState* state) {
         for(int x = 0; x < GRID_SIZE; x++) {
             int idx = get_index(x, y);
             
-            // Edge cells maintain beta level
-            if(x == 0 || x == GRID_SIZE - 1 || y == 0 || y == GRID_SIZE - 1) {
+            // Border cells (2 from edge) maintain beta level
+            if(x < 2 || x >= GRID_SIZE - 2 || y < 2 || y >= GRID_SIZE - 2) {
                 u_new[idx] = state->beta;
                 continue;
             }
@@ -249,27 +253,57 @@ static void grow_snowflake(SnowflakeState* state) {
     free(u_new);
     
     // Step 3: Add background vapor and update s = u + (v + gamma)
+    // Use two-phase update to avoid directional bias
+    float* s_new = (float*)malloc(GRID_SIZE * GRID_SIZE * sizeof(float));
+    uint8_t* frozen_new = (uint8_t*)malloc(GRID_SIZE * GRID_SIZE * sizeof(uint8_t));
+    if(!s_new || !frozen_new) {
+        if(s_new) free(s_new);
+        if(frozen_new) free(frozen_new);
+        return;
+    }
+    
+    // Copy current frozen state
+    memcpy(frozen_new, state->frozen, GRID_SIZE * GRID_SIZE * sizeof(uint8_t));
+    
     int frozen_count = 0;
+    
+    // Phase 1: Calculate new s values and determine which cells should freeze
+    // using the CURRENT (unchanged) frozen state
     for(int y = 0; y < GRID_SIZE; y++) {
         for(int x = 0; x < GRID_SIZE; x++) {
             int idx = get_index(x, y);
+            
+            // Border cells (2 from edge): always maintain beta, never freeze
+            if(x < 2 || x >= GRID_SIZE - 2 || y < 2 || y >= GRID_SIZE - 2) {
+                s_new[idx] = state->beta;
+                frozen_new[idx] = 0;
+                continue;
+            }
+            
+            // Use OLD frozen state for receptiveness check
             bool is_receptive = state->frozen[idx] || is_boundary_cell(state, x, y);
             
             if(is_receptive) {
                 // Receptive: s_new = u_new + (s_old + gamma)
-                state->s[idx] = state->u[idx] + state->s[idx] + state->gamma;
+                s_new[idx] = state->u[idx] + state->s[idx] + state->gamma;
                 
-                // Freeze boundary cells that reach threshold
-                if(!state->frozen[idx] && state->s[idx] >= 1.0f) {
-                    state->frozen[idx] = 1;
+                // Mark for freezing if threshold reached
+                if(!state->frozen[idx] && s_new[idx] >= 1.0f) {
+                    frozen_new[idx] = 1;
                     frozen_count++;
                 }
             } else {
                 // Non-receptive: s = u (v=0 for non-receptive)
-                state->s[idx] = state->u[idx];
+                s_new[idx] = state->u[idx];
             }
         }
     }
+    
+    // Phase 2: Commit all changes atomically
+    memcpy(state->s, s_new, GRID_SIZE * GRID_SIZE * sizeof(float));
+    memcpy(state->frozen, frozen_new, GRID_SIZE * GRID_SIZE * sizeof(uint8_t));
+    free(s_new);
+    free(frozen_new);
     
     state->step++;
     FURI_LOG_I(TAG, "Step %d: froze %d cells", state->step, frozen_count);
@@ -324,7 +358,7 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
             get_hex_center_pixel(x, y, &px, &py);
             
             // Check bounds
-            if(px >= 64 && px < 128 && py >= 0 && py < 64) {
+            if(px >= 48 && px < 128 && py >= 0 && py < 64) {
                 bool is_frozen = state->frozen[get_index(x, y)];
                 fill_hex_cell(canvas, px, py, is_frozen);
             }
@@ -332,8 +366,6 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
     }
     
     // Draw UI hints
-    // canvas_draw_icon(canvas, 121, 57, &I_arrows);
-    // canvas_draw_str_aligned(canvas, 120, 63, AlignRight, AlignBottom, "Navigate");    
     canvas_draw_icon(canvas, 1, 55, &I_back);
     canvas_draw_str_aligned(canvas, 11, 62, AlignLeft, AlignBottom, "Hold: Exit");
     elements_button_center(canvas, "OK");
