@@ -6,33 +6,60 @@
 #include <string.h>         // Memory and string manipulation functions
 #include <math.h>           // Math functions (sqrt, fmax, fmin)
 #include <furi_hal.h>       // Logging functionality
+#include "mitzi_snowflake_icons.h"
 
 // ===================================================================
-// Constants - 64x64 drawing area with Reiter model
+// Constants
 // ===================================================================
-#define GRID_SIZE 64        // Grid is 64x64 to fill drawing area
+#define GRID_SIZE 32        // Grid is 32x32 for hexagonal cells
+#define HEX_SIZE 2          // Visual size of each hex cell (2 pixels)
 #define SCREEN_OFFSET_X 64  // Draw on right side of screen
-#define SCREEN_OFFSET_Y 0   // Start at top
 
-#define TAG "Snowflake"  // Tag for logging
+#define TAG "Snowflake"
 
-// Reiter's model parameters - TUNED for visible growth
-#define ALPHA 2.0f      // Diffusion constant
-#define BETA 0.6f       // Boundary vapor level (increased)
-#define GAMMA 0.05f     // Background vapor addition (MUCH higher for visible growth)
+// Parameter limits
+#define ALPHA_MIN 0.5f
+#define ALPHA_MAX 5.0f
+#define ALPHA_STEP 0.5f
+
+#define BETA_MIN 0.1f
+#define BETA_MAX 0.9f
+#define BETA_STEP 0.05f
+
+#define GAMMA_MIN 0.001f
+#define GAMMA_MAX 0.1f
+#define GAMMA_STEP 0.005f
 
 // ===================================================================
-// Application State Structure - compact memory layout
+// Parameter selection
+// ===================================================================
+typedef enum {
+    PARAM_ALPHA,
+    PARAM_BETA,
+    PARAM_GAMMA,
+    PARAM_COUNT
+} ParamType;
+
+// ===================================================================
+// Application State Structure
 // ===================================================================
 typedef struct {
-    float* s;        // State values (water content) - 4096 floats = 16KB
-    float* u;        // Non-frozen diffusing water - 4096 floats = 16KB
-    uint8_t* frozen; // Boolean: is cell frozen? - 4096 bytes = 4KB
-    int step;        // Current growth step counter
+    float* s;        // State values (water content)
+    float* u;        // Non-frozen diffusing water
+    uint8_t* frozen; // Boolean: is cell frozen?
+    int step;
+    
+    // Adjustable parameters
+    float alpha;     // Diffusion constant
+    float beta;      // Boundary vapor level
+    float gamma;     // Background vapor addition
+    
+    ParamType selected_param;  // Which parameter is being adjusted
+    uint32_t back_press_timer; // For detecting long press
 } SnowflakeState;
 
 // ===================================================================
-// Function: Get array index from x,y coordinates
+// Function: Get array index
 // ===================================================================
 static inline int get_index(int x, int y) {
     return y * GRID_SIZE + x;
@@ -40,12 +67,10 @@ static inline int get_index(int x, int y) {
 
 // ===================================================================
 // Function: Check if cell is boundary cell
-// A boundary cell is unfrozen but has at least one frozen neighbor
 // ===================================================================
 static bool is_boundary_cell(SnowflakeState* state, int x, int y) {
     if(state->frozen[get_index(x, y)]) return false;
     
-    // Check 6 hexagonal neighbors (approximated on square grid)
     static const int dx[] = {1, 1, 0, -1, -1, 0};
     static const int dy[] = {0, -1, -1, 0, 1, 1};
     
@@ -67,75 +92,60 @@ static bool is_boundary_cell(SnowflakeState* state, int x, int y) {
 // Function: Initialize Snowflake
 // ===================================================================
 static void init_snowflake(SnowflakeState* state) {
-    FURI_LOG_I(TAG, "Initializing snowflake with Reiter model");
+    FURI_LOG_I(TAG, "Initializing snowflake");
     
-    // Initialize all cells with boundary vapor level BETA
+    // Initialize all cells
     for(int i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-        state->s[i] = BETA;
+        state->s[i] = state->beta;
         state->u[i] = 0.0f;
         state->frozen[i] = 0;
     }
     
-    // Set center cell as frozen seed
+    // Freeze center cell
     int center = GRID_SIZE / 2;
     int center_idx = get_index(center, center);
     state->s[center_idx] = 1.0f;
     state->frozen[center_idx] = 1;
     
     state->step = 0;
-    FURI_LOG_I(TAG, "Snowflake initialized at (%d,%d)", center, center);
+    FURI_LOG_I(TAG, "Initialized with α=%f β=%f γ=%f", 
+               (double)state->alpha, (double)state->beta, (double)state->gamma);
 }
 
 // ===================================================================
-// Function: Grow Snowflake using Reiter's cellular automaton model
+// Function: Grow Snowflake (Reiter's model)
 // ===================================================================
 static void grow_snowflake(SnowflakeState* state) {
-    FURI_LOG_I(TAG, "=== Growing snowflake - Step %d ===", state->step);
-    
     static const int dx[] = {1, 1, 0, -1, -1, 0};
     static const int dy[] = {0, -1, -1, 0, 1, 1};
     
-    // Allocate temporary array for new u values
     float* u_new = (float*)malloc(GRID_SIZE * GRID_SIZE * sizeof(float));
-    if(!u_new) {
-        FURI_LOG_E(TAG, "Failed to allocate u_new");
-        return;
-    }
+    if(!u_new) return;
     
-    // Step 1: Classify cells and set u values
-    int receptive_count = 0;
-    int boundary_count = 0;
+    // Step 1: Classify cells
     for(int y = 0; y < GRID_SIZE; y++) {
         for(int x = 0; x < GRID_SIZE; x++) {
             int idx = get_index(x, y);
-            
             bool is_receptive = state->frozen[idx] || is_boundary_cell(state, x, y);
             
             if(is_receptive) {
-                receptive_count++;
-                if(!state->frozen[idx]) boundary_count++;
-                // Receptive cells: no diffusion (u=0), water stays frozen
                 state->u[idx] = 0.0f;
             } else {
-                // Non-receptive cells: all water can diffuse
                 state->u[idx] = state->s[idx];
             }
         }
     }
-    FURI_LOG_I(TAG, "Step 1: Receptive=%d (boundary=%d)", receptive_count, boundary_count);
     
-    // Step 2: Apply diffusion to u
+    // Step 2: Diffusion
     for(int y = 0; y < GRID_SIZE; y++) {
         for(int x = 0; x < GRID_SIZE; x++) {
             int idx = get_index(x, y);
             
-            // Boundary cells maintain BETA level
             if(x == 0 || x == GRID_SIZE - 1 || y == 0 || y == GRID_SIZE - 1) {
-                u_new[idx] = BETA;
+                u_new[idx] = state->beta;
                 continue;
             }
             
-            // Calculate neighbor average for diffusion
             float sum = 0.0f;
             int count = 0;
             
@@ -150,55 +160,53 @@ static void grow_snowflake(SnowflakeState* state) {
             }
             
             float avg = (count > 0) ? (sum / count) : state->u[idx];
-            
-            // Apply diffusion: u(t+1) = u(t) + α/2 * (avg - u(t))
-            u_new[idx] = state->u[idx] + (ALPHA / 2.0f) * (avg - state->u[idx]);
+            u_new[idx] = state->u[idx] + (state->alpha / 2.0f) * (avg - state->u[idx]);
         }
     }
     
-    // Step 3: Copy back u values
     memcpy(state->u, u_new, GRID_SIZE * GRID_SIZE * sizeof(float));
     free(u_new);
-    FURI_LOG_I(TAG, "Step 2: Diffusion complete");
     
-    // Step 4: Update s values and handle freezing
+    // Step 3: Update and freeze
     int frozen_count = 0;
-    int candidates = 0;
-    float max_s = 0.0f;
-    float min_s_boundary = 999.0f;
-    
     for(int y = 0; y < GRID_SIZE; y++) {
         for(int x = 0; x < GRID_SIZE; x++) {
             int idx = get_index(x, y);
-            
             bool is_receptive = state->frozen[idx] || is_boundary_cell(state, x, y);
             
             if(is_receptive) {
-                // Receptive cells: keep existing s value and add background vapor
-                state->s[idx] = state->s[idx] + GAMMA;
+                state->s[idx] = state->s[idx] + state->gamma;
                 
-                if(!state->frozen[idx]) {
-                    candidates++;
-                    if(state->s[idx] > max_s) max_s = state->s[idx];
-                    if(state->s[idx] < min_s_boundary) min_s_boundary = state->s[idx];
-                }
-                
-                // Freeze boundary cells when they reach threshold
                 if(!state->frozen[idx] && state->s[idx] >= 1.0f) {
                     state->frozen[idx] = 1;
                     frozen_count++;
                 }
             } else {
-                // Non-receptive cells: s equals diffused u
                 state->s[idx] = state->u[idx];
             }
         }
     }
     
-    FURI_LOG_I(TAG, "Step 3: Boundary candidates=%d, s_range=[%f,%f], froze=%d cells", 
-               candidates, (double)min_s_boundary, (double)max_s, frozen_count);
-    
     state->step++;
+    FURI_LOG_I(TAG, "Step %d: froze %d cells", state->step, frozen_count);
+}
+
+// ===================================================================
+// Function: Draw hexagonal cell
+// ===================================================================
+static void draw_hex(Canvas* canvas, int cx, int cy, int size) {
+    // Draw a filled circle approximation of hex
+    for(int dy = -size; dy <= size; dy++) {
+        for(int dx = -size; dx <= size; dx++) {
+            if(dx*dx + dy*dy <= size*size) {
+                int px = cx + dx;
+                int py = cy + dy;
+                if(px >= 64 && px < 128 && py >= 0 && py < 64) {
+                    canvas_draw_dot(canvas, px, py);
+                }
+            }
+        }
+    }
 }
 
 // ===================================================================
@@ -209,35 +217,65 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
     
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
-    
-    // Draw UI
+    // Draw header with icon and title
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 2, 10, "Snowflake");
-    
+	canvas_draw_icon(canvas, 1, 1, &I_icon_10x10);	
+	canvas_draw_str_aligned(canvas, 13, 1, AlignLeft, AlignTop, "Snowflake");
+	canvas_set_font(canvas, FontSecondary);
+	
+	
+    // Draw parameter info on left side
     canvas_set_font(canvas, FontSecondary);
+    
+    char alpha_str[32];
+    snprintf(alpha_str, sizeof(alpha_str), "%s alpha:%.1f", 
+             (state->selected_param == PARAM_ALPHA) ? ">" : " ", (double)state->alpha);
+    canvas_draw_str(canvas, 2, 18, alpha_str);
+    
+    char beta_str[32];
+    snprintf(beta_str, sizeof(beta_str), "%s beta:%.2f", 
+             (state->selected_param == PARAM_BETA) ? ">" : " ", (double)state->beta);
+    canvas_draw_str(canvas, 2, 27, beta_str);
+    
+    char gamma_str[32];
+    snprintf(gamma_str, sizeof(gamma_str), "%s gam:%.3f", 
+             (state->selected_param == PARAM_GAMMA) ? ">" : " ", (double)state->gamma);
+    canvas_draw_str(canvas, 2, 36, gamma_str);
+    
+    // Draw step counter
     char step_str[32];
-    snprintf(step_str, sizeof(step_str), "Step: %d", state->step);
-    canvas_draw_str(canvas, 2, 22, step_str);
+    snprintf(step_str, sizeof(step_str), "Step %d", state->step);
+    canvas_draw_str(canvas, 2, 46, step_str);
     
-    canvas_draw_str(canvas, 2, 34, "OK: Grow");
-    canvas_draw_str(canvas, 2, 44, "Left: Reset");
-    canvas_draw_str(canvas, 2, 54, "Back: Exit");
-    
-    // Draw snowflake - only frozen cells in 64x64 area
+    // Count frozen cells
     int frozen_total = 0;
+    for(int i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+        if(state->frozen[i]) frozen_total++;
+    }
+    
+    char frozen_str[32];
+    snprintf(frozen_str, sizeof(frozen_str), "%d frozen cells", frozen_total);
+    canvas_draw_str(canvas, 2, 56, frozen_str);
+    
+    // Draw snowflake with hexagonal cells
     for(int y = 0; y < GRID_SIZE; y++) {
         for(int x = 0; x < GRID_SIZE; x++) {
             if(state->frozen[get_index(x, y)]) {
-                frozen_total++;
-                canvas_draw_dot(canvas, SCREEN_OFFSET_X + x, SCREEN_OFFSET_Y + y);
+                // Calculate screen position with hexagonal offset
+                int px = SCREEN_OFFSET_X + x * HEX_SIZE;
+                int py = y * HEX_SIZE;
+                
+                // Offset every other row for hexagonal packing
+                if(y % 2 == 1) {
+                    px += HEX_SIZE / 2;
+                }
+                
+                draw_hex(canvas, px, py, HEX_SIZE / 2);
             }
         }
     }
-    
-    // Show frozen count
-    char frozen_str[32];
-    snprintf(frozen_str, sizeof(frozen_str), "Cells: %d", frozen_total);
-    canvas_draw_str(canvas, 2, 64, frozen_str);
+	canvas_draw_icon(canvas, 121, 57, &I_back);
+	canvas_draw_str_aligned(canvas, 120, 63, AlignRight, AlignBottom, "Exit");	
 }
 
 // ===================================================================
@@ -259,18 +297,13 @@ int32_t snowflake_main(void* p) {
     
     // Allocate state
     SnowflakeState* state = malloc(sizeof(SnowflakeState));
-    if(!state) {
-        FURI_LOG_E(TAG, "Failed to allocate state");
-        return -1;
-    }
+    if(!state) return -1;
     
-    // Allocate arrays - total: ~36KB
     state->s = (float*)malloc(GRID_SIZE * GRID_SIZE * sizeof(float));
     state->u = (float*)malloc(GRID_SIZE * GRID_SIZE * sizeof(float));
     state->frozen = (uint8_t*)malloc(GRID_SIZE * GRID_SIZE * sizeof(uint8_t));
     
     if(!state->s || !state->u || !state->frozen) {
-        FURI_LOG_E(TAG, "Failed to allocate arrays");
         if(state->s) free(state->s);
         if(state->u) free(state->u);
         if(state->frozen) free(state->frozen);
@@ -278,12 +311,17 @@ int32_t snowflake_main(void* p) {
         return -1;
     }
     
+    // Initialize default parameters
+    state->alpha = 2.0f;
+    state->beta = 0.6f;
+    state->gamma = 0.05f;
+    state->selected_param = PARAM_ALPHA;
+    state->back_press_timer = 0;
+    
     init_snowflake(state);
     
-    // Create event queue
     FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
     if(!event_queue) {
-        FURI_LOG_E(TAG, "Failed to allocate event queue");
         free(state->s);
         free(state->u);
         free(state->frozen);
@@ -291,33 +329,65 @@ int32_t snowflake_main(void* p) {
         return -1;
     }
     
-    // Set up viewport
     ViewPort* view_port = view_port_alloc();
     view_port_draw_callback_set(view_port, snowflake_draw_callback, state);
     view_port_input_callback_set(view_port, snowflake_input_callback, event_queue);
     
-    // Register viewport
     Gui* gui = furi_record_open(RECORD_GUI);
     gui_add_view_port(gui, view_port, GuiLayerFullscreen);
-    FURI_LOG_I(TAG, "GUI initialized");
     
-    // Main event loop
     InputEvent event;
     bool running = true;
     
     while(running) {
         if(furi_message_queue_get(event_queue, &event, 100) == FuriStatusOk) {
-            if(event.type == InputTypePress || event.type == InputTypeRepeat) {
-                if(event.key == InputKeyBack) {
-                    FURI_LOG_I(TAG, "Exiting");
-                    running = false;
-                } else if(event.key == InputKeyOk) {
-                    FURI_LOG_I(TAG, "OK pressed - growing");
+            if(event.key == InputKeyBack) {
+                if(event.type == InputTypePress) {
+                    state->back_press_timer = furi_get_tick();
+                } else if(event.type == InputTypeRelease) {
+                    uint32_t press_duration = furi_get_tick() - state->back_press_timer;
+                    if(press_duration > 500) {
+                        // Long press - exit
+                        FURI_LOG_I(TAG, "Long press - exiting");
+                        running = false;
+                    } else {
+                        // Short press - reset
+                        FURI_LOG_I(TAG, "Short press - reset");
+                        init_snowflake(state);
+                        view_port_update(view_port);
+                    }
+                }
+            } else if(event.type == InputTypePress || event.type == InputTypeRepeat) {
+                if(event.key == InputKeyOk) {
                     grow_snowflake(state);
                     view_port_update(view_port);
                 } else if(event.key == InputKeyLeft) {
-                    FURI_LOG_I(TAG, "Left pressed - resetting");
-                    init_snowflake(state);
+                    // Previous parameter
+                    state->selected_param = (state->selected_param + PARAM_COUNT - 1) % PARAM_COUNT;
+                    view_port_update(view_port);
+                } else if(event.key == InputKeyRight) {
+                    // Next parameter
+                    state->selected_param = (state->selected_param + 1) % PARAM_COUNT;
+                    view_port_update(view_port);
+                } else if(event.key == InputKeyUp) {
+                    // Increase parameter
+                    if(state->selected_param == PARAM_ALPHA) {
+                        state->alpha = fminf(state->alpha + ALPHA_STEP, ALPHA_MAX);
+                    } else if(state->selected_param == PARAM_BETA) {
+                        state->beta = fminf(state->beta + BETA_STEP, BETA_MAX);
+                    } else if(state->selected_param == PARAM_GAMMA) {
+                        state->gamma = fminf(state->gamma + GAMMA_STEP, GAMMA_MAX);
+                    }
+                    view_port_update(view_port);
+                } else if(event.key == InputKeyDown) {
+                    // Decrease parameter
+                    if(state->selected_param == PARAM_ALPHA) {
+                        state->alpha = fmaxf(state->alpha - ALPHA_STEP, ALPHA_MIN);
+                    } else if(state->selected_param == PARAM_BETA) {
+                        state->beta = fmaxf(state->beta - BETA_STEP, BETA_MIN);
+                    } else if(state->selected_param == PARAM_GAMMA) {
+                        state->gamma = fmaxf(state->gamma - GAMMA_STEP, GAMMA_MIN);
+                    }
                     view_port_update(view_port);
                 }
             }
@@ -325,7 +395,6 @@ int32_t snowflake_main(void* p) {
     }
     
     // Cleanup
-    FURI_LOG_I(TAG, "Cleaning up");
     gui_remove_view_port(gui, view_port);
     furi_record_close(RECORD_GUI);
     view_port_free(view_port);
