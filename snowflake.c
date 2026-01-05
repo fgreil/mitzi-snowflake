@@ -1,7 +1,7 @@
 // Includes
 #include <furi.h>           // Furi OS core functionality
 #include <gui/gui.h>        // GUI system for drawing to the screen
-#include <gui/elements.h>  // GUI elements library for button hints and UI components
+#include <gui/elements.h>   // GUI elements library for button hints and UI components
 #include <input/input.h>    // Input handling for button presses
 #include <stdlib.h>         // Standard library functions (malloc, calloc, etc.)
 #include <string.h>         // Memory and string manipulation functions
@@ -12,24 +12,29 @@
 // ===================================================================
 // Constants
 // ===================================================================
-#define GRID_SIZE 32        // Grid is 32x32 for hexagonal cells
-#define HEX_SIZE 2          // Visual size of each hex cell (2 pixels)
-#define SCREEN_OFFSET_X 64  // Draw on right side of screen
+#define GRID_SIZE 16        // Grid is 16x16 logical hex cells
+#define HEX_WIDTH 3         // Each hex cell is 3 pixels wide
+#define HEX_HEIGHT 4        // Each hex cell is 4 pixels tall
+#define SCREEN_OFFSET_X 80  // Draw on right side of screen
+#define SCREEN_OFFSET_Y 0   // Start at top
 
 #define TAG "Snowflake"
 
 // Parameter limits
 #define ALPHA_MIN 0.5f
 #define ALPHA_MAX 5.0f
-#define ALPHA_STEP 0.5f
+#define ALPHA_STEP 0.1f
+#define ALPHA_INIT 1.0f     // Initial alpha value
 
 #define BETA_MIN 0.1f
 #define BETA_MAX 0.9f
 #define BETA_STEP 0.05f
+#define BETA_INIT 0.5f      // Initial beta value
 
 #define GAMMA_MIN 0.001f
 #define GAMMA_MAX 0.1f
 #define GAMMA_STEP 0.005f
+#define GAMMA_INIT 0.01f    // Initial gamma value
 
 // ===================================================================
 // Parameter selection
@@ -67,17 +72,90 @@ static inline int get_index(int x, int y) {
 }
 
 // ===================================================================
+// Function: Map logical hex cell to screen center pixel
+// Returns the center pixel (*) position for a given hex cell
+// ===================================================================
+static void get_hex_center_pixel(int hex_x, int hex_y, int* pixel_x, int* pixel_y) {
+    // Each hex is HEX_WIDTH pixels wide horizontally
+    // Odd rows are offset by HEX_WIDTH/2 for hexagonal packing
+    *pixel_x = SCREEN_OFFSET_X + hex_x * HEX_WIDTH;
+    *pixel_y = SCREEN_OFFSET_Y + hex_y * HEX_HEIGHT;
+    
+    // Offset every other row for hexagonal packing
+    if(hex_y % 2 == 1) {
+        *pixel_x += HEX_WIDTH / 2;
+    }
+}
+
+// ===================================================================
+// Function: Fill hexagonal cell
+// Draws a 3x4 hexagon pattern:
+//   0,X,0
+//   X,X,X
+//   X,C,X  (C = center pixel at column 1, row 2)
+//   0,X,0
+// ===================================================================
+static void fill_hex_cell(Canvas* canvas, int center_px, int center_py, bool filled) {
+    // Row 0: top (offset -2 from center) - only middle pixel
+    if(filled) canvas_draw_dot(canvas, center_px, center_py - 2);
+    
+    // Row 1: (offset -1 from center) - all three pixels
+    if(filled) {
+        canvas_draw_dot(canvas, center_px - 1, center_py - 1);
+        canvas_draw_dot(canvas, center_px, center_py - 1);
+        canvas_draw_dot(canvas, center_px + 1, center_py - 1);
+    }
+    
+    // Row 2: center row - X,C,X pattern
+    if(filled) {
+        canvas_draw_dot(canvas, center_px - 1, center_py);
+        canvas_draw_dot(canvas, center_px, center_py);  // C = center pixel
+        canvas_draw_dot(canvas, center_px + 1, center_py);
+    } else {
+        // Always draw center pixel even when not filled (for grid visualization)
+        canvas_draw_dot(canvas, center_px, center_py);
+    }
+    
+    // Row 3: bottom (offset +1 from center) - only middle pixel
+    if(filled) canvas_draw_dot(canvas, center_px, center_py + 1);
+}
+
+// ===================================================================
+// Function: Get hexagonal neighbors accounting for row offset
+// Even and odd rows have different neighbor positions
+// ===================================================================
+static void get_hex_neighbors(int x, int y, int neighbors_x[6], int neighbors_y[6]) {
+    if(y % 2 == 0) {
+        // Even rows: neighbors at (-1,0), (-1,-1), (0,-1), (1,0), (0,1), (-1,1)
+        neighbors_x[0] = x + 1;  neighbors_y[0] = y;      // E
+        neighbors_x[1] = x;      neighbors_y[1] = y - 1;  // NE
+        neighbors_x[2] = x - 1;  neighbors_y[2] = y - 1;  // NW
+        neighbors_x[3] = x - 1;  neighbors_y[3] = y;      // W
+        neighbors_x[4] = x - 1;  neighbors_y[4] = y + 1;  // SW
+        neighbors_x[5] = x;      neighbors_y[5] = y + 1;  // SE
+    } else {
+        // Odd rows: neighbors at (1,0), (1,-1), (0,-1), (-1,0), (0,1), (1,1)
+        neighbors_x[0] = x + 1;  neighbors_y[0] = y;      // E
+        neighbors_x[1] = x + 1;  neighbors_y[1] = y - 1;  // NE
+        neighbors_x[2] = x;      neighbors_y[2] = y - 1;  // NW
+        neighbors_x[3] = x - 1;  neighbors_y[3] = y;      // W
+        neighbors_x[4] = x;      neighbors_y[4] = y + 1;  // SW
+        neighbors_x[5] = x + 1;  neighbors_y[5] = y + 1;  // SE
+    }
+}
+
+// ===================================================================
 // Function: Check if cell is boundary cell
 // ===================================================================
 static bool is_boundary_cell(SnowflakeState* state, int x, int y) {
     if(state->frozen[get_index(x, y)]) return false;
     
-    static const int dx[] = {1, 1, 0, -1, -1, 0};
-    static const int dy[] = {0, -1, -1, 0, 1, 1};
+    int neighbors_x[6], neighbors_y[6];
+    get_hex_neighbors(x, y, neighbors_x, neighbors_y);
     
-    for(int dir = 0; dir < 6; dir++) {
-        int nx = x + dx[dir];
-        int ny = y + dy[dir];
+    for(int i = 0; i < 6; i++) {
+        int nx = neighbors_x[i];
+        int ny = neighbors_y[i];
         
         if(nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE) {
             if(state->frozen[get_index(nx, ny)]) {
@@ -117,13 +195,10 @@ static void init_snowflake(SnowflakeState* state) {
 // Function: Grow Snowflake (Reiter's model)
 // ===================================================================
 static void grow_snowflake(SnowflakeState* state) {
-    static const int dx[] = {1, 1, 0, -1, -1, 0};
-    static const int dy[] = {0, -1, -1, 0, 1, 1};
-    
     float* u_new = (float*)malloc(GRID_SIZE * GRID_SIZE * sizeof(float));
     if(!u_new) return;
     
-    // Step 1: Classify cells
+    // Step 1: Classify cells and set u values
     for(int y = 0; y < GRID_SIZE; y++) {
         for(int x = 0; x < GRID_SIZE; x++) {
             int idx = get_index(x, y);
@@ -142,17 +217,22 @@ static void grow_snowflake(SnowflakeState* state) {
         for(int x = 0; x < GRID_SIZE; x++) {
             int idx = get_index(x, y);
             
+            // Edge cells maintain beta level
             if(x == 0 || x == GRID_SIZE - 1 || y == 0 || y == GRID_SIZE - 1) {
                 u_new[idx] = state->beta;
                 continue;
             }
             
+            // Get hex neighbors with proper offset
+            int neighbors_x[6], neighbors_y[6];
+            get_hex_neighbors(x, y, neighbors_x, neighbors_y);
+            
             float sum = 0.0f;
             int count = 0;
             
-            for(int dir = 0; dir < 6; dir++) {
-                int nx = x + dx[dir];
-                int ny = y + dy[dir];
+            for(int i = 0; i < 6; i++) {
+                int nx = neighbors_x[i];
+                int ny = neighbors_y[i];
                 
                 if(nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE) {
                     sum += state->u[get_index(nx, ny)];
@@ -168,7 +248,7 @@ static void grow_snowflake(SnowflakeState* state) {
     memcpy(state->u, u_new, GRID_SIZE * GRID_SIZE * sizeof(float));
     free(u_new);
     
-    // Step 3: Update and freeze
+    // Step 3: Add background vapor and update s = u + (v + gamma)
     int frozen_count = 0;
     for(int y = 0; y < GRID_SIZE; y++) {
         for(int x = 0; x < GRID_SIZE; x++) {
@@ -176,13 +256,16 @@ static void grow_snowflake(SnowflakeState* state) {
             bool is_receptive = state->frozen[idx] || is_boundary_cell(state, x, y);
             
             if(is_receptive) {
-                state->s[idx] = state->s[idx] + state->gamma;
+                // Receptive: s_new = u_new + (s_old + gamma)
+                state->s[idx] = state->u[idx] + state->s[idx] + state->gamma;
                 
+                // Freeze boundary cells that reach threshold
                 if(!state->frozen[idx] && state->s[idx] >= 1.0f) {
                     state->frozen[idx] = 1;
                     frozen_count++;
                 }
             } else {
+                // Non-receptive: s = u (v=0 for non-receptive)
                 state->s[idx] = state->u[idx];
             }
         }
@@ -193,24 +276,6 @@ static void grow_snowflake(SnowflakeState* state) {
 }
 
 // ===================================================================
-// Function: Draw hexagonal cell
-// ===================================================================
-static void draw_hex(Canvas* canvas, int cx, int cy, int size) {
-    // Draw a filled circle approximation of hex
-    for(int dy = -size; dy <= size; dy++) {
-        for(int dx = -size; dx <= size; dx++) {
-            if(dx*dx + dy*dy <= size*size) {
-                int px = cx + dx;
-                int py = cy + dy;
-                if(px >= 64 && px < 128 && py >= 0 && py < 64) {
-                    canvas_draw_dot(canvas, px, py);
-                }
-            }
-        }
-    }
-}
-
-// ===================================================================
 // Function: Draw Callback
 // ===================================================================
 static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
@@ -218,16 +283,14 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
     
     canvas_clear(canvas);
     canvas_set_color(canvas, ColorBlack);
+    
     // Draw header with icon and title
     canvas_set_font(canvas, FontPrimary);
-	canvas_draw_icon(canvas, 1, 1, &I_icon_10x10);	
-	canvas_draw_str_aligned(canvas, 13, 1, AlignLeft, AlignTop, "Snowflake");
-	canvas_set_font(canvas, FontSecondary);
-	
-	
-    // Draw parameter info on left side
+    canvas_draw_icon(canvas, 1, 1, &I_icon_10x10);    
+    canvas_draw_str_aligned(canvas, 13, 1, AlignLeft, AlignTop, "Snowflake");
     canvas_set_font(canvas, FontSecondary);
     
+    // Draw parameter info on left side
     char alpha_str[32];
     snprintf(alpha_str, sizeof(alpha_str), "%s alpha:%.1f", 
              (state->selected_param == PARAM_ALPHA) ? ">" : " ", (double)state->alpha);
@@ -242,39 +305,38 @@ static void snowflake_draw_callback(Canvas* canvas, void* ctx) {
     snprintf(gamma_str, sizeof(gamma_str), "%s gam:%.3f", 
              (state->selected_param == PARAM_GAMMA) ? ">" : " ", (double)state->gamma);
     canvas_draw_str(canvas, 2, 36, gamma_str);
+    
     // Count frozen cells
     int frozen_total = 0;
     for(int i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
         if(state->frozen[i]) frozen_total++;
     }
+    
     // Draw step counter
     char buffer[42];
     snprintf(buffer, sizeof(buffer), "Step %d: %d frozen", state->step, frozen_total);
     canvas_draw_str(canvas, 2, 50, buffer);
-   
     
-    // Draw snowflake with hexagonal cells
+    // Draw all hexagonal cells
     for(int y = 0; y < GRID_SIZE; y++) {
         for(int x = 0; x < GRID_SIZE; x++) {
-            if(state->frozen[get_index(x, y)]) {
-                // Calculate screen position with hexagonal offset
-                int px = SCREEN_OFFSET_X + x * HEX_SIZE;
-                int py = y * HEX_SIZE;
-                
-                // Offset every other row for hexagonal packing
-                if(y % 2 == 1) {
-                    px += HEX_SIZE / 2;
-                }
-                
-                draw_hex(canvas, px, py, HEX_SIZE / 2);
+            int px, py;
+            get_hex_center_pixel(x, y, &px, &py);
+            
+            // Check bounds
+            if(px >= 64 && px < 128 && py >= 0 && py < 64) {
+                bool is_frozen = state->frozen[get_index(x, y)];
+                fill_hex_cell(canvas, px, py, is_frozen);
             }
         }
     }
-	canvas_draw_icon(canvas, 121, 57, &I_back);
-	canvas_draw_str_aligned(canvas, 120, 63, AlignRight, AlignBottom, "Hold: Exit");	
-	canvas_draw_icon(canvas, 1, 55, &I_arrows);
-	canvas_draw_str_aligned(canvas, 11, 62, AlignLeft, AlignBottom, "Navigate");
-	elements_button_center(canvas, "OK");
+    
+    // Draw UI hints
+    // canvas_draw_icon(canvas, 121, 57, &I_arrows);
+    // canvas_draw_str_aligned(canvas, 120, 63, AlignRight, AlignBottom, "Navigate");    
+    canvas_draw_icon(canvas, 1, 55, &I_back);
+    canvas_draw_str_aligned(canvas, 11, 62, AlignLeft, AlignBottom, "Hold: Exit");
+    elements_button_center(canvas, "OK");
 }
 
 // ===================================================================
@@ -311,9 +373,9 @@ int32_t snowflake_main(void* p) {
     }
     
     // Initialize default parameters
-    state->alpha = 2.0f;
-    state->beta = 0.6f;
-    state->gamma = 0.05f;
+    state->alpha = ALPHA_INIT;
+    state->beta = BETA_INIT;
+    state->gamma = GAMMA_INIT;
     state->selected_param = PARAM_ALPHA;
     state->back_press_timer = 0;
     
@@ -360,15 +422,15 @@ int32_t snowflake_main(void* p) {
                 if(event.key == InputKeyOk) {
                     grow_snowflake(state);
                     view_port_update(view_port);
-                } else if(event.key == InputKeyLeft) {
+                } else if(event.key == InputKeyUp) {
                     // Previous parameter
                     state->selected_param = (state->selected_param + PARAM_COUNT - 1) % PARAM_COUNT;
                     view_port_update(view_port);
-                } else if(event.key == InputKeyRight) {
+                } else if(event.key == InputKeyDown) {
                     // Next parameter
                     state->selected_param = (state->selected_param + 1) % PARAM_COUNT;
                     view_port_update(view_port);
-                } else if(event.key == InputKeyUp) {
+                } else if(event.key == InputKeyRight) {
                     // Increase parameter
                     if(state->selected_param == PARAM_ALPHA) {
                         state->alpha = fminf(state->alpha + ALPHA_STEP, ALPHA_MAX);
@@ -378,7 +440,7 @@ int32_t snowflake_main(void* p) {
                         state->gamma = fminf(state->gamma + GAMMA_STEP, GAMMA_MAX);
                     }
                     view_port_update(view_port);
-                } else if(event.key == InputKeyDown) {
+                } else if(event.key == InputKeyLeft) {
                     // Decrease parameter
                     if(state->selected_param == PARAM_ALPHA) {
                         state->alpha = fmaxf(state->alpha - ALPHA_STEP, ALPHA_MIN);
